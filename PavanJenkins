@@ -1,0 +1,457 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "EFIT Correspondence ELK Prod Environments",
+  "Mappings": {
+    "params": {
+            "ASV": {
+                "dev": "PavanJenkins"
+
+            },
+            "AppNotifyTopic": {
+                "dev": "arn:aws:sns:us-west-2:027411730761:MyPersonalSNSTopic"
+
+            },
+            "AvailabilityZones": {
+                "dev": [
+                    "us-west-2a"
+                ]
+            },
+            "CMDBEnvironment": {
+                "dev": "PavanJenkins"
+
+            },
+      		"DesiredCapacity": {
+        				"dev": "1"
+      			},
+            "ImageId": {
+                "dev": "ami-f173cc91"
+            },
+      			"InstanceType": {
+        				"dev": "t2.micro"
+      			},
+      			"MaxCapacity": {
+        			"dev": "1"
+      			},
+      			"MinCapacity": {
+        			"dev": "1"
+      			},
+            "SecurityGroups": {
+                "dev": [
+                    "sg-2a838c52"
+                ]
+            },
+      		"EBSDeleteOption": {
+       		 "dev": "true"
+
+    	  },
+            "Subnets": {
+                "dev": [
+                    "subnet-7bac3e1c"
+                ]
+            },
+            "TicketCreateSNS": {
+                "dev": "arn:aws:sns:us-west-2:027411730761:MyPersonalSNSTopic"
+            },
+      "UserData": {
+                "dev": [
+                    "#!/bin/bash -v \n",
+                    "yum -y install lvm2 \n",
+                    "pvcreate /dev/xvdf /dev/xvdg \n",
+                    "vgcreate datavg  /dev/xvdf \n",
+                    "vgcreate dockervg  /dev/xvdg \n",
+                    "lvcreate -L 10G -n efit datavg \n",
+                    "lvcreate -L 10G -n docker dockervg \n",
+                    "mkfs.ext4 /dev/datavg/efit \n",
+                    "mkfs.ext4 /dev/dockervg/docker \n",
+                    "echo '/dev/datavg/efit       /data         auto    defaults,noatime    1  2' >> /etc/fstab \n",
+                    "echo '/dev/dockervg/docker       /var/lib/docker         auto    defaults,noatime    1  2' >> /etc/fstab \n",
+                    "mkdir -p /data \n",
+                    "mkdir -p /var/lib/docker \n",
+                    "mount /dev/datavg/efit /data \n",
+                    "mount /dev/dockervg/docker /var/lib/docker \n",
+                    "sed -ri '/^hosts:(.+?)myhostname/ c\\hosts:      files dns' /etc/nsswitch.conf \n",
+                    "curl -L https://www.opscode.com/chef/install.sh | sudo bash \n",
+                    "mkdir /etc/chef \n",
+                    "cd /etc/chef \n",
+                    "wget https://raw.githubusercontent.com/pavanganti/documents/master/pavanganti.pem \n",
+                    "wget https://raw.githubusercontent.com/pavanganti/documents/master/client.rb \n",
+                    "mkdir /etc/chef/trusted_certs \n",
+                    "knife ssl fetch -c /etc/chef/client.rb \n",
+                    "wget https://raw.githubusercontent.com/pavanganti/documents/master/startup.json \n",
+                    "/usr/bin/chef-client  -j /etc/chef/startup.json"
+
+        ]
+      }
+    }
+  },
+  "Parameters": {
+        "EID": {
+            "Default": "pganti",
+            "Description": "What is your eid?",
+            "Type": "String"
+        },
+    "Environment": {
+      "AllowedValues": [
+
+        "dev"
+      ],
+      "Default": "dev",
+      "Description": "What environment type is it ?",
+      "Type": "String"
+    },
+    "KeyName": {
+      "Default": "myEc2KeyPair",
+      "Description": "What key file should be used for the instances? (PEM file)",
+      "Type": "String"
+    }
+  },
+  "Resources": {
+    "ASGCpuHighAlarm": {
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "ASGScaleUpPolicy"
+          },
+          {
+            "Fn::FindInMap": [
+              "params",
+              "AppNotifyTopic",
+              {
+                "Ref": "Environment"
+              }
+            ]
+          }
+        ],
+        "AlarmDescription": "Scale up if CPU > 75% average over 5 minutes",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "AutoScalingGroupName",
+            "Value": {
+              "Ref": "WebAutoScalingGroup"
+            }
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "CPUUtilization",
+        "Namespace": "AWS/EC2",
+        "Period": 300,
+        "Statistic": "Average",
+        "Threshold": "75"
+      },
+            "Type": "AWS::CloudWatch::Alarm"
+    },
+    "ASGNetInLowAlarm": {
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "ASGScaleDownPolicy"
+          }
+        ],
+        "ComparisonOperator": "LessThanOrEqualToThreshold",
+        "Dimensions": [
+          {
+            "Name": "AutoScalingGroupName",
+            "Value": {
+              "Ref": "WebAutoScalingGroup"
+            }
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "NetworkIn",
+        "Namespace": "AWS/EC2",
+        "Period": 300,
+        "Statistic": "Average",
+        "Threshold": "75000",
+        "Unit": "Bytes"
+      },
+            "Type": "AWS::CloudWatch::Alarm"
+        },
+    "ASGScaleDownPolicy": {
+      "Properties": {
+        "AdjustmentType": "ChangeInCapacity",
+        "AutoScalingGroupName": {
+          "Ref": "WebAutoScalingGroup"
+        },
+        "Cooldown": 60,
+        "ScalingAdjustment": "-1"
+      },
+            "Type": "AWS::AutoScaling::ScalingPolicy"
+        },
+    "ASGScaleUpPolicy": {
+      "Properties": {
+        "AdjustmentType": "ChangeInCapacity",
+        "AutoScalingGroupName": {
+          "Ref": "WebAutoScalingGroup"
+        },
+        "Cooldown": 60,
+        "ScalingAdjustment": "1"
+      },
+            "Type": "AWS::AutoScaling::ScalingPolicy"
+        },
+    "ASGStatusCheckAlarm": {
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Fn::FindInMap": [
+              "params",
+              "TicketCreateSNS",
+              {
+                "Ref": "Environment"
+              }
+            ]
+          }
+        ],
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "Dimensions": [
+          {
+            "Name": "AutoScalingGroupName",
+            "Value": {
+              "Ref": "WebAutoScalingGroup"
+            }
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "StatusCheckFailed",
+        "Namespace": "AWS/EC2",
+        "Period": 300,
+        "Statistic": "Maximum",
+        "Threshold": "1"
+      },
+            "Type": "AWS::CloudWatch::Alarm"
+        },
+    "LaunchConfiguration": {
+      "Properties": {
+        "AssociatePublicIpAddress": "true",
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/sdg",
+            "Ebs": {
+              "DeleteOnTermination": {
+                "Fn::FindInMap": [
+                  "params",
+                  "EBSDeleteOption",
+                  {
+                    "Ref": "Environment"
+                  }
+                ]
+              },
+              "VolumeSize": "30",
+              "VolumeType": "gp2"
+            }
+          },
+          {
+            "DeviceName": "/dev/sdf",
+            "Ebs": {
+              "DeleteOnTermination": {
+                "Fn::FindInMap": [
+                  "params",
+                  "EBSDeleteOption",
+                  {
+                    "Ref": "Environment"
+                  }
+                ]
+              },
+              "VolumeSize": "30",
+              "VolumeType": "gp2"
+            }
+          }
+        ],
+        "ImageId": {
+          "Fn::FindInMap": [
+            "params",
+            "ImageId",
+            {
+              "Ref": "Environment"
+            }
+          ]
+        },
+        "InstanceType": {
+          "Fn::FindInMap": [
+            "params",
+            "InstanceType",
+            {
+              "Ref": "Environment"
+            }
+          ]
+        },
+        "KeyName": {
+          "Ref": "KeyName"
+        },
+        "SecurityGroups": {
+          "Fn::FindInMap": [
+            "params",
+            "SecurityGroups",
+            {
+              "Ref": "Environment"
+            }
+          ]
+        },
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "\n",
+              {
+                "Fn::FindInMap": [
+                  "params",
+                  "UserData",
+                  {
+                    "Ref": "Environment"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+            "Type": "AWS::AutoScaling::LaunchConfiguration"
+        },
+    "WebAutoScalingGroup": {
+      "Properties": {
+        "AvailabilityZones": {
+          "Fn::FindInMap": [
+            "params",
+            "AvailabilityZones",
+            {
+              "Ref": "Environment"
+            }
+          ]
+        },
+        "DesiredCapacity": {
+          "Fn::FindInMap": [
+            "params",
+            "DesiredCapacity",
+            {
+              "Ref": "Environment"
+            }
+          ]
+        },
+        "HealthCheckType": "EC2",
+        "LaunchConfigurationName": {
+          "Ref": "LaunchConfiguration"
+        },
+
+        "MaxSize": {
+          "Fn::FindInMap": [
+            "params",
+            "MaxCapacity",
+            {
+              "Ref": "Environment"
+            }
+          ]
+        },
+        "MinSize": {
+          "Fn::FindInMap": [
+            "params",
+            "MinCapacity",
+            {
+              "Ref": "Environment"
+            }
+          ]
+        },
+        "NotificationConfiguration": {
+          "NotificationTypes": [
+            "autoscaling:EC2_INSTANCE_LAUNCH",
+            "autoscaling:EC2_INSTANCE_LAUNCH_ERROR",
+            "autoscaling:EC2_INSTANCE_TERMINATE",
+            "autoscaling:EC2_INSTANCE_TERMINATE_ERROR"
+          ],
+          "TopicARN": {
+            "Fn::FindInMap": [
+              "params",
+              "AppNotifyTopic",
+              {
+                "Ref": "Environment"
+              }
+            ]
+          }
+        },
+        "Tags": [
+          {
+            "Key": "OwnerContact",
+            "PropagateAtLaunch": true,
+                        "Value": {
+                            "Fn::FindInMap": [
+                                "params",
+                                "AppNotifyTopic",
+                                {
+                                    "Ref": "Environment"
+                                }
+                            ]
+                        }
+                    },
+          {
+            "Key": "ASV",
+            "PropagateAtLaunch": true,
+            "Value": {
+              "Fn::FindInMap": [
+                "params",
+                "ASV",
+                {
+                  "Ref": "Environment"
+                }
+              ]
+            }
+          },
+          {
+            "Key": "EID",
+            "PropagateAtLaunch": true,
+            "Value": {
+              "Ref": "EID"
+            }
+          },
+          {
+            "Key": "CMDBEnvironment",
+            "PropagateAtLaunch": true,
+            "Value": {
+              "Fn::FindInMap": [
+                "params",
+                "CMDBEnvironment",
+                {
+                  "Ref": "Environment"
+                }
+              ]
+            }
+          },
+          {
+            "Key": "SNSTopicARN",
+            "PropagateAtLaunch": true,
+            "Value": {
+              "Fn::FindInMap": [
+                "params",
+                "AppNotifyTopic",
+                {
+                  "Ref": "Environment"
+                }
+              ]
+            }
+          },
+          {
+            "Key": "Name",
+            "PropagateAtLaunch": true,
+            "Value": {
+              "Ref": "AWS::StackName"
+            }
+          }
+        ],
+        "VPCZoneIdentifier": {
+          "Fn::FindInMap": [
+            "params",
+            "Subnets",
+            {
+              "Ref": "Environment"
+            }
+          ]
+        }
+      },
+      "Type": "AWS::AutoScaling::AutoScalingGroup",
+      "UpdatePolicy": {
+        "AutoScalingRollingUpdate": {
+          "MaxBatchSize": "1",
+          "MinInstancesInService": "1",
+          "PauseTime": "PT5M"
+                }
+            }
+        }
+    }
+}
